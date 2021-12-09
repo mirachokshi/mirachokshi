@@ -1,0 +1,199 @@
+#import packages for data analysis and mapping
+import os
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import time as tme
+import math
+from datetime import datetime, timedelta
+from matplotlib.dates import DateFormatter, DayLocator,HourLocator
+import glob
+import os
+#import sched
+
+
+# DEFINE folder to read file, folder to read support file & folder to export processed files 
+hrrr_path = 'S:/Cognos/RainForecast/processed'      #* means all
+quad_path = 'W:\EMB\SSIP Hydraulics and Systems Engineering\HH MODELING\RAIN\AQPI\Grids'
+map_path = 'P:\AQPI'
+
+#open latest HRRR file from the folder
+list_of_files = glob.glob(hrrr_path + '/*')   
+aqpi_filename = max(list_of_files, key=os.path.getctime)     #define specific folder+file name if not latest file
+
+
+#open file and process the data 
+SFCHrrrFile = aqpi_filename
+file1 = open(SFCHrrrFile, 'r') 
+Lines = file1.readlines() 
+FirstLine = Lines[0]
+fDateTime = FirstLine[-13:].rstrip('\n')
+lDateTime = datetime.strptime(fDateTime, "%Y%m%d%H%M") - timedelta(hours=8) #from UTC to local timezone
+
+#WRITE .csv file to read into dataframe
+AQPIfilename = map_path + '/input' + fDateTime +'.csv'
+with open(AQPIfilename, "w") as f:
+    for i in range (4,53,1):
+        f.write (Lines[i])
+        
+#read csv file name
+df = pd.read_csv(AQPIfilename, header=None)
+
+#read csv file name for quadrant weights
+AQPIQuadrants = quad_path + '/Quadrants.csv'
+quads = pd.read_csv(AQPIQuadrants)
+#assign array for weights to each point for the quadrant
+q1weights = quads.loc[:,'Quadrant1']
+q2weights = quads.loc[:,'Quadrant2']
+q3weights = quads.loc[:,'Quadrant3']
+q4weights = quads.loc[:,'Quadrant4']
+
+
+#Calculate 1-hour, 3-hr, 6-hr and 18-hr forecast values
+df18hr = df.iloc[0:49, 3:76]
+df18hr_dp = df18hr * (900/25.4)     #  15-minute depth in inches
+#print (df18hr_dp)   # prints a 49 * 73 point array
+
+
+#setup the depth for each return period, color and label 
+np_30mdepth = np.array([0.34, 0.42, 0.53, 0.62, 0.74, 0.95])
+np_1hrdepth = np.array([0.47, 0.58, 0.73, 0.85, 1.03, 1.32])
+np_color = np.array(['grey','y','c','m','r','k'])
+np_label = np.array(['1-year','2-year','5-year','10-year','25-year','100-year'])
+#define color for each quad
+colors = ['red', 'blue', 'green', 'orange']
+
+#TOTAL 0.5- and 1-HOUR RAINFALL DEPTH - FOR COMPARISON WITH RETURN PERIOD
+#0.5- and 1-hour total depth for quadrant 1
+quad1wghtnp = np.average(df18hr_dp, axis=0, weights=q1weights)
+quad1wght = pd.DataFrame(quad1wghtnp)
+quad1wght_1hrtot = quad1wght.rolling(4).sum() #1-hour total depths in inches
+quad1wght_30mtot = quad1wght.rolling(2).sum() #30-min total depths in inches
+
+#TOTAL 0.5- and 1-HOUR RAINFALL DEPTH - FOR COMPARISON WITH RETURN PERIOD
+#0.5- and 1-hour total depth for quadrant 2
+quad2wghtnp = np.average(df18hr_dp, axis=0, weights=q2weights)
+quad2wght = pd.DataFrame(quad2wghtnp)
+quad2wght_1hrtot = quad2wght.rolling(4).sum() #1-hour total depths in inches
+quad2wght_30mtot = quad2wght.rolling(2).sum() #30-min total depths in inches
+
+#TOTAL 0.5- and 1-HOUR RAINFALL DEPTH - FOR COMPARISON WITH RETURN PERIOD
+#0.5- and 1-hour total depth for quadrant 3
+quad3wghtnp = np.average(df18hr_dp, axis=0, weights=q3weights)
+quad3wght = pd.DataFrame(quad3wghtnp)
+quad3wght_1hrtot = quad3wght.rolling(4).sum() #1-hour total depths in inches
+quad3wght_30mtot = quad3wght.rolling(2).sum() #30-min total depths in inches
+
+#TOTAL 0.5- and 1-HOUR RAINFALL DEPTH - FOR COMPARISON WITH RETURN PERIOD
+#0.5- and 1-hour total depth for quadrant 4
+quad4wghtnp = np.average(df18hr_dp, axis=0, weights=q4weights)
+quad4wght = pd.DataFrame(quad4wghtnp)
+quad4wght_1hrtot = quad4wght.rolling(4).sum() #1-hour total depths in inches
+quad4wght_30mtot = quad4wght.rolling(2).sum() #30-min total depths in inches
+
+#TOTAL CUMULATIVE RAINFALL DEPTH 
+quad1cs = quad1wght.cumsum()              #quad 1 - cumulative sum of total rainfall in inches
+quad2cs = quad2wght.cumsum()              #quad 2
+quad3cs = quad3wght.cumsum()              #quad 3
+quad4cs = quad4wght.cumsum()              #quad 4
+
+#create a timeseries for the graph's x-axis
+tseries = pd.date_range(start=lDateTime, periods=73, freq='15T')
+
+# calculate the average of the four points for 18-hour forecasts
+z18hr = np.array(df18hr_dp.sum(1))   
+zD18hr = np.reshape(z18hr, (-1, 7))
+zF18hr = np.empty((6, 6))
+for r in range(0,6,1):
+    for c in range (0,6,1):
+        zF18hr [r,c] = np.average(zD18hr[r:r+2,c:c+2])
+
+#plot the data on a map, add background layers (Borders, Coastline, Ocean, etc)
+figure = plt.figure(figsize=(17,11),edgecolor='black', frameon='true')
+figure.suptitle('Estimated Rainfall Forecast at: ' + lDateTime.strftime("%b %d, %Y %I:%M%p"), fontsize=16)
+gridspec = figure.add_gridspec(ncols=3, nrows=2)
+
+# FIGURE 1 - TOP CENTER - Add 18-hour forecasts totals as a spatial map
+ax = figure.add_subplot(gridspec[0, 1])
+pmax = np.amax(zF18hr)
+#use seaborn to create a heatmap and overlay the SF outline on top
+hmax = sns.heatmap(zF18hr,cmap = 'coolwarm',alpha = 0.6,zorder = 2,yticklabels=False, xticklabels=False)
+hmax.figure.axes[0].invert_yaxis()
+img = plt.imread(quad_path + "/SFOutline.jpg")
+hmax.imshow(img, extent = hmax.get_xlim() + hmax.get_ylim(), zorder=1)
+#Add labels for the 4 quadrants
+ax.set_title ("Total Depth (inches) for next 18-hours",fontsize=12)
+#ax.set_rasterization_zorder(1)
+plt.text(0.1,0.2,'SW Quadrant',horizontalalignment='left', verticalalignment='bottom', transform = ax.transAxes)
+plt.text(0.1,0.8,'NW Quadrant',horizontalalignment='left', verticalalignment='top', transform = ax.transAxes)
+plt.text(0.9,0.8,'NE Quadrant',horizontalalignment='right', verticalalignment='top', transform = ax.transAxes)
+plt.text(0.9,0.2,'SE Quadrant',horizontalalignment='right', verticalalignment='bottom', transform = ax.transAxes)
+
+
+# FIGURE 2 - BOTTOM CENTER -  Add timeseries forecasts for cumulative total for all quadrants
+ax = figure.add_subplot(gridspec[1, 1])
+df = pd.DataFrame({'DateTime': tseries, "Quad1": quad1cs[0],"Quad2": quad2cs[0],
+                   "Quad3": quad3cs[0],"Quad4": quad4cs[0]})
+df.plot(kind='line', x="DateTime", y="Quad1", ax=ax, color=colors[0])
+df.plot(kind='line', x="DateTime", y="Quad2", ax=ax, color=colors[1])
+df.plot(kind='line', x="DateTime", y="Quad3", ax=ax, color=colors[2])
+df.plot(kind='line', x="DateTime", y="Quad4", ax=ax, color=colors[3])
+plt.ylabel('Total Cumulative Depth (inches)')
+plt.title('Cumulative Rainfall for Next 18 hours')
+plt.legend(title = "Legend Title")
+ax.legend(["Quadrant SW", "Quadrant NW", "Quadrant NE", "Quadrant SE"]);
+
+
+# function to plot the quadrant data
+def plot_quadrants (ax, quad_data, qcolor, yaxislabel, qtitle, np_depth):
+    ax.bar(tseries, quad_data,color=qcolor, width=0.005 )
+    plt.ylabel(yaxislabel)
+    plt.title(qtitle) 
+    ax.xaxis.set_major_locator(HourLocator(interval=3))
+    ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+    ax.set_ylim(bottom = 0, top=1.4)
+    #Add return period lines and a legend to show them
+    for x in range(0, 5):
+        plt.axhline(y=np_depth[x], color = np_color[x], linestyle=':', label=np_label[x])
+    plt.legend(bbox_to_anchor = (1, 1), loc = 'upper right')
+    return figure
+
+
+# FIGURE 3 - BOTTOM LEFT - Add timeseries forecasts for quadrant 1
+ax = figure.add_subplot(gridspec[1, 0])
+f = plot_quadrants (ax, quad1wght_1hrtot[0], colors[0], 'Total 1-hour Depth (inches)','SW Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+#f = plot_quadrants (ax, quad1wght_30mtot[0], colors[0], 'Total 30-min Depth (inches)','SW Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+
+
+# FIGURE 4 - TOP LEFT -  Add timeseries forecasts for quadrant 2
+ax = figure.add_subplot(gridspec[0, 0])
+f = plot_quadrants (ax, quad2wght_1hrtot[0], colors[1],'Total 1-hour Depth (inches)','NW Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+#f = plot_quadrants (ax, quad2wght_30mtot[0], colors[1], 'Total 30-min Depth (inches)','NW Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+
+
+# FIGURE 5 - TOP RIGHT - Add timeseries forecasts for quadrant 3
+ax = figure.add_subplot(gridspec[0, 2])
+f = plot_quadrants (ax, quad3wght_1hrtot[0], colors[2],'Total 1-hour Depth (inches)','NE Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+#f = plot_quadrants (ax, quad3wght_30mtot[0], colors[2], 'Total 30-min Depth (inches)','NE Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+
+
+# FIGURE 6 - TOP LEFT - Add timeseries forecasts for quadrant 4
+ax = figure.add_subplot(gridspec[1, 2])
+f = plot_quadrants (ax, quad4wght_1hrtot[0], colors[3], 'Total 1-hour Depth (inches)','SE Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+#f = plot_quadrants (ax, quad4wght_30mtot[0], colors[3], 'Total 30-min Depth (inches)','SE Quadrant: Forecast for Next 18 hours', np_1hrdepth)
+
+
+# show the plot
+plt.show()
+
+# print the plot as PDF
+ForecastFile = map_path + '/Forecast ' + lDateTime.strftime("%d-%b-%Y-%H") + '_1hr RP.pdf'
+figure.savefig(ForecastFile) 
+
+
+
+
+
+
+
